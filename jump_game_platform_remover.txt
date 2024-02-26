@@ -1,0 +1,26 @@
+--@name Jump Game Platform Remover
+--@author Vactor0911
+--@server
+
+--Find platforms
+aryPlatform = find.byClass("ent_jgplatform", function(entity)
+    if not isValid( entity:getOwner() ) then
+        return entity
+    end
+end)
+
+--Find nothing
+if #aryPlatform <= 0 then
+    chip():remove()
+    print("Cannot find any platforms!")
+    return
+end
+
+--Parent every platforms with chip
+for k, v in pairs(aryPlatform) do
+    v:setParent( chip() )
+end
+
+--Destroy chip
+chip():remove()
+print("Successfully removed " .. tostring(#aryPlatform) .. " platforms!")
