@@ -1,0 +1,160 @@
+--@name Advanced Pod Controller
+--@author Vactor0911
+--@shared
+
+--Set output value of key inputs
+DICT_KEY = {
+        [KEY.A] = "A",
+        [KEY.B] = "B",
+        [KEY.C] = "C",
+        [KEY.D] = "D",
+        --E Key is not available
+        [KEY.F] = "F",
+        [KEY.G] = "G",
+        [KEY.H] = "H",
+        [KEY.I] = "I",
+        [KEY.J] = "J",
+        [KEY.K] = "K",
+        [KEY.L] = "L",
+        [KEY.M] = "M",
+        [KEY.N] = "N",
+        [KEY.O] = "O",
+        [KEY.P] = "P",
+        [KEY.Q] = "Q",
+        [KEY.R] = "R",
+        [KEY.S] = "S",
+        [KEY.T] = "T",
+        [KEY.U] = "U",
+        [KEY.V] = "V",
+        [KEY.W] = "W",
+        [KEY.X] = "X",
+        [KEY.Y] = "Y",
+        [KEY.Z] = "Z",
+        [KEY.KEY1] = "1",
+        [KEY.KEY2] = "2",
+        [KEY.KEY3] = "3",
+        [KEY.KEY4] = "4",
+        [KEY.KEY5] = "5",
+        [KEY.KEY6] = "6",
+        [KEY.KEY7] = "7",
+        [KEY.KEY8] = "8",
+        [KEY.KEY9] = "9",
+        [KEY.KEY0] = "0",
+        [KEY.SPACE] = "Space",
+        [KEY.SHIFT] = "Shift",
+        [KEY.CTRL] = "Ctrl",
+        [KEY.ALT] = "Alt",
+        [MOUSE.MOUSE1] = "Mouse1",
+        [MOUSE.MOUSE2] = "Mouse2",
+        [MOUSE.MOUSE3] = "Mouse3",
+        [MOUSE.MOUSE4] = "Mouse4",
+        [MOUSE.MOUSE5] = "Mouse5",
+        [MOUSE.MWHEELUP] = "MouseWheelUp",
+        [MOUSE.MWHEELDOWN] = "MouseWheelDown"
+    }
+
+
+if SERVER then
+    
+    wire.adjustInputs( {"Chair"}, {"e"} )
+    wire.adjustOutputs( {"W", "S", "A", "D", "Mouse1", "Mouse2", "R", "Space", "Shift", "Ctrl", "Alt", "F", "G", "H", "X", "V", "B", "N", "M", "Active", "Driver"},
+    {"n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "e"} )
+    
+    --Initialize
+    chair = entity(0)
+    wire.ports.Active = 0
+    wire.ports.Driver = entity(0)
+    hook.add("ClientInitialized", "", function(player)
+        if player ~= owner() then
+            return
+        end
+        
+        net.start("Chair")
+        net.writeEntity(chair)
+        net.send()
+    end)
+    
+    --Get Chair & Initialize Color
+    hook.add("input", "", function(inputName, value)
+        if inputName ~= "Chair" then
+            return
+        end
+        
+        if isValid(value) and value:isVehicle() then
+            chip():setColor( Color(255, 191, 0) )
+            chair = wire.ports.Chair
+        else
+            chip():setColor( Color(255, 0, 0) )
+            chair = entity(0)
+        end
+        net.start("Chair")
+        net.writeEntity(chair)
+        net.send()
+    end)
+    
+    --Get Driver & Update Color
+    hook.add("PlayerEnteredVehicle", "", function(player, vehicle)
+        if vehicle == chair then
+            wire.ports.Driver = player
+            wire.ports.Active = 1
+            chip():setColor( Color(0, 255, 0) )
+        end
+    end)
+    hook.add("PlayerLeaveVehicle", "", function(player, vehicle)
+        if vehicle == chair then
+            wire.ports.Driver = entity(0)
+            wire.ports.Active = 0
+            chip():setColor( Color(255, 191, 0) )
+            
+            --Reset All Outputs
+            outputNames, outputTypes = wire.getOutputs( chip() )
+            for k,v in pairs(outputNames) do
+                if outputTypes[k] ~= "NORMAL" then
+                    return
+                end
+                wire.ports[v] = 0
+            end
+        end
+    end)
+    
+    --KEY Input
+    net.receive("Pressed", function()
+        key = net.readFloat()
+        wire.ports[ DICT_KEY[key] ] = 1
+    end)
+    
+    net.receive("Released", function()
+        key = net.readFloat()
+        wire.ports[ DICT_KEY[key] ] = 0
+    end)
+end
+
+
+if CLIENT then
+    --Get Chair
+    chair = entity(0)
+    net.receive("Chair", function()
+        chair = net.readEntity()
+    end)
+    
+    --Key Input
+    hook.add("inputPressed", "", function(key)
+        if not isValid(chair) or player() ~= chair:getDriver() or DICT_KEY[key] == nil then
+            return
+        end
+        
+        net.start("Pressed")
+        net.writeFloat(key)
+        net.send()
+    end)
+    
+    hook.add("inputReleased", "", function(key)
+        if not isValid(chair) or player() ~= chair:getDriver() or DICT_KEY[key] == nil then
+            return
+        end
+        
+        net.start("Released")
+        net.writeFloat(key)
+        net.send()
+    end)
+end

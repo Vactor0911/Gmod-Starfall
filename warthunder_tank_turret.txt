@@ -1,0 +1,354 @@
+--@name WarThunder Tank Turret
+--@author Vactor0911
+--@shared
+--@include Class/hud_class.txt
+
+
+--[ Settings ]--
+TURN_SPEED = 15
+PITCH_MIN = 5
+PITCH_MAX = 85
+
+NORM_VIEW = {200, 450}
+GUNNER_VIEW = {53, -120}
+COMMANDER_VIEW = {100, 0}
+BINOCULAR_VIEW = {150, -50}
+ZOOM_MULTIPLIER = 3
+BINOCULAR_ZOOM = 5
+
+
+--[ Codes ]--
+require("Class/hud_class.txt")
+
+function Clamp(angle, minAngle, maxAngle)
+    local pitch = math.clamp(angle.pitch, minAngle.pitch, maxAngle.pitch)
+    local yaw = math.clamp(angle.yaw, minAngle.yaw, maxAngle.yaw)
+    local roll = math.clamp(angle.roll, minAngle.roll, maxAngle.roll)
+    return Angle(pitch, yaw, roll)
+end
+
+change = {}
+function Changed(name, value)
+    if change[name] ~= value then
+        change[name] = value
+        return true
+    else
+        return false
+    end
+end
+
+zoomMultiplier = 1
+fov = 90
+function UpdateCam()
+    tempView = aryView[view]
+    Cam.Position = Turret:localToWorld( Vector(0, 0, tempView[1]) )
+    Cam.Distance = tempView[2]
+    if view == "GunnerView" then
+        zoomMultiplier = (zoom and ZOOM_MULTIPLIER or 1)
+    elseif view == "BinocularView" then
+        zoomMultiplier = BINOCULAR_ZOOM
+    else
+        zoomMultiplier = 1
+    end
+    Cam.FOV = fov / zoomMultiplier
+    
+    net.start("View")
+    net.writeTable( {view, zoomMultiplier} )
+    net.send()
+end
+
+aryView = { ["NormalView"] = NORM_VIEW, ["CommanderView"] = COMMANDER_VIEW, ["GunnerView"] = GUNNER_VIEW, ["BinocularView"] = BINOCULAR_VIEW }
+
+if SERVER then
+    wire.adjustInputs( {"Base", "Turret", "Gun", "Cam", "Chair", "Active", "Fire", "Zoom", "FreeView", "GunnerView", "BinocularView"},
+        {"e", "e", "e", "wirelink", "e", "n", "n", "n", "n", "n", "n"} )
+    wire.adjustOutputs( {"TurretAngle", "DisableFire"}, {"a", "n"} )
+    
+    --Initialize
+    Base = wire.ports.Base
+    Turret = wire.ports.Turret
+    Gun = wire.ports.Gun
+    Cam = wire.ports.Cam
+    Chair = wire.ports.Chair
+    
+    if not isValid(Base) or not isValid(Turret) or not isValid(Gun) or not isValid(Cam) or not isValid(Chair) then
+        return
+    end
+    
+    Cam.Position = Turret:localToWorld( Vector(0, 0, NORM_VIEW[1]) )
+    Cam.Distance = NORM_VIEW[2]
+    view = "NormalView"
+    zoom = false
+    
+    hook.add("ClientInitialized", "", function(player)
+        if isValid(Gun) then
+            net.start("Entities")
+            net.writeEntity(Gun)
+            net.send(player)
+        end
+    end)
+    
+    --Hologram
+    holoNormView = hologram.create( Turret:localToWorld( Vector(-NORM_VIEW[2], 0, NORM_VIEW[1]) ), Angle(), "models/sprops/cuboids/height06/size_1/cube_6x6x6.mdl", Vector(1) )
+    holoGunnerView = hologram.create( Turret:localToWorld( Vector(-GUNNER_VIEW[2], 0, GUNNER_VIEW[1]) ), Angle(), "models/sprops/cuboids/height06/size_1/cube_6x6x6.mdl", Vector(1) )
+    holoCommanderView = hologram.create( Turret:localToWorld( Vector(-COMMANDER_VIEW[2], 0, COMMANDER_VIEW[1]) ), Angle(), "models/sprops/cuboids/height06/size_1/cube_6x6x6.mdl", Vector(1) )
+    holoBinocularView = hologram.create( Turret:localToWorld( Vector(-BINOCULAR_VIEW[2], 0, BINOCULAR_VIEW[1]) ), Angle(), "models/sprops/cuboids/height06/size_1/cube_6x6x6.mdl", Vector(1) )
+    
+    holoNormView:setColor( Color(0, 255, 0) )
+    holoGunnerView:setColor( Color(255, 0, 0) )
+    holoCommanderView:setColor( Color(255, 191, 0) )
+    holoBinocularView:setColor( Color(0, 0, 255) )
+    
+    hook.add("PlayerUnfrozeObject", "", function(player, entity)
+        if not isValid(Base) then
+            return
+        end
+        
+        if entity == Base then
+            holoNormView:remove()
+            holoGunnerView:remove()
+            holoCommanderView:remove()
+            holoBinocularView:remove()
+        end
+    end)
+    
+    hook.add("PlayerEnteredVehicle", "", function(player, vehicle)
+        if vehicle == Chair then
+            fov = Chair:getDriver():getFOV()
+            view = "NormalView"
+            zoom = false
+            UpdateCam()
+            
+            net.start("Fov")
+            net.writeFloat(fov)
+            net.send()
+        end
+    end)
+    
+    --Inputs
+    hook.add("input", "", function(inputName, value)
+        if inputName ~= "Fire" and inputName ~= "Zoom" and inputName ~= "GunnerView" and inputName ~= "BinocularView" then
+            return
+        elseif inputName ~= "Fire" and value == 0 then
+            return
+        end
+        
+        --Zoom
+        if inputName == "Zoom" and view ~= "BinocularView" then
+            if view == "NormalView" then
+                view = "CommanderView"
+            elseif view == "CommanderView" then
+                view = "NormalView"
+            elseif view == "GunnerView" then
+                zoom = not zoom
+            end
+            UpdateCam()
+        end
+        
+        --Gunner View
+        if inputName == "GunnerView" then
+            if view ~= "GunnerView" then
+                view = "GunnerView"
+                zoom = false
+            else
+                view = "NormalView"
+            end
+            UpdateCam()
+        end
+        
+        --Binocular View
+        if inputName == "BinocularView" then
+            if view ~= "BinocularView" then
+                view = "BinocularView"
+                wire.ports.DisableFire = 1
+            else
+                view = "NormalView"
+                wire.ports.DisableFire = 0
+            end
+            UpdateCam()
+        end
+    end)
+    
+    Los = Vector(0, 0, 0)
+    timer.create("Interval", 0.1, 0, function()
+        --Turret
+        if not isValid(Base) or not isValid(Turret) or not isValid(Gun) or not isValid(Chair) then
+            return
+        end
+
+        if wire.ports.Active == 0 or wire.ports.FreeView == 1 then --Deactive & Free View
+            return
+        end
+        
+        if view ~= "BinocularView" or wire.ports.Fire == 1 then
+            Trace = trace.line( Cam.CamPos, Cam.CamPos + Cam.CamDir * 999999,
+            function(ent)
+                local Dist = Turret:getPos():getDistance( ent:getPos() )
+                if Dist <= 600 then return end
+            end, nil, nil, false)
+            Los = Trace.HitPos - Gun:getPos()
+        end
+        
+        LocalAng = Gun:worldToLocalAngles( Los:getAngle() )
+        TurretSpdAng = Clamp( LocalAng, Angle(0 , -TURN_SPEED, 0), Angle(0, TURN_SPEED, 0) )
+        TurretRestrictAng = Clamp( Base:worldToLocalAngles( Turret:localToWorldAngles(TurretSpdAng) ), -Angle(0, 180, 0), Angle(0, 180, 0) )
+        
+        GunSpdAng = Clamp( LocalAng, Angle(-TURN_SPEED * 1.5 , 0, 0), Angle(TURN_SPEED * 1.5, 0, 0) )
+        GunRestrictAng = Clamp( Turret:worldToLocalAngles( Gun:localToWorldAngles(GunSpdAng) ), -Angle(PITCH_MAX, 0, 0), Angle(PITCH_MIN, 0, 0) )
+        
+        Turret:setAngles( Base:localToWorldAngles(TurretRestrictAng) )
+        Gun:setAngles( Turret:localToWorldAngles( Angle(GunRestrictAng.pitch, 0, 0) ) )
+        wire.ports.TurretAngle = Angle(GunRestrictAng.pitch, TurretRestrictAng.yaw, 0)
+        
+    end)
+end
+
+--Hud
+if CLIENT then
+    --Initialize
+    view = "NormalView"
+    fov = 90
+    zoomMultiplier = 1
+    
+    --Receive Gun Entity
+    net.receive("Entities", function()
+        gun = net.readEntity()
+    end)
+    
+    --Receive View Data
+    net.receive("View", function()
+        local array = net.readTable()
+        view = array[1]
+        zoomMultiplier = array[2]
+    end)
+    
+    --Receive Fov Data
+    net.receive("Fov", function()
+        fov = net.readFloat()
+    end)
+    
+    --Draw Hud
+    matCorner = render.createMaterial("gui/sniper_corner")
+    
+    hud = Hud:new(0, 0)
+    render.createRenderTarget("canvas")
+    render.createRenderTarget("gunner")
+    render.createRenderTarget("gunner2")
+    render.createRenderTarget("binocular")
+    render.createRenderTarget("binocular2")
+    
+    hook.add("drawhud", "", function()
+        render.selectRenderTarget("canvas") --Normal Screen
+            render.clear(Color(0,0,0,0), true)
+            
+            render.drawCircle(512, 512, 22) --Aim Point
+        
+        render.selectRenderTarget("gunner") -- Gunner Screen
+            render.clear(Color(0, 0, 0, 0), true)
+            render.drawRectFast(0, 0, 42, 1024)
+            render.drawRectFast(982, 0, 42, 1024)
+            
+            render.setMaterial(matCorner)
+            render.drawTexturedRectRotated(512 - 235, 512 - 235, 470, 470, 0)
+            render.drawTexturedRectRotated(512 + 235, 512 - 235, 470, 470, 90)
+            render.drawTexturedRectRotated(512 + 235, 512 + 235, 470, 470, 180)
+            render.drawTexturedRectRotated(512 - 235, 512 + 235, 470, 470, 270)
+            
+        render.selectRenderTarget("gunner2")
+            render.clear(Color(0, 0, 0, 0), true)
+            render.drawLine(0, 512, 1024, 512)
+            render.drawLine(512, 0, 512, 1024)
+            
+            for i=1, 4 do
+                local scale = math.max(zoomMultiplier * 0.5, 1) * 20
+                render.drawLine(512 - i * scale + scale * 0.5, 507, 512 - i * scale + scale * 0.5, 517) --Left Short
+                render.drawLine(512 - i * scale, 504, 512 - i * scale, 520) --Left Long
+                
+                render.drawLine(512 + i * scale - scale * 0.5, 507, 512 + i * scale - scale * 0.5, 517) --Right Short
+                render.drawLine(512 + i * scale, 504, 512 + i * scale, 520) --Right Long
+            end
+        
+        render.selectRenderTarget("binocular") --Binocular Screen
+            render.clear(Color(0,0,0,0), true)
+            render.drawRectFast(0, 0, 62, 1024)
+            render.drawRectFast(962, 0, 62, 1024)
+            render.drawRectFast(0, 0, 1024, 272)
+            render.drawRectFast(0, 752, 1024, 272)
+            
+            render.setMaterial(matCorner)
+                    
+            render.enableScissorRect(0, 0, 512, 1024)
+            render.drawTexturedRectRotated(512 - 130 - 190, 512 - 120, 260, 240, 0)
+            render.drawTexturedRectRotated(512 + 130 - 190, 512 - 120, 240, 260, 90)
+            render.drawTexturedRectRotated(512 + 130 - 190, 512 + 120, 260, 240, 180)
+            render.drawTexturedRectRotated(512 - 130 - 190, 512 + 120, 240, 260, 270)
+            
+            render.enableScissorRect(512, 0, 1024, 1024)
+            render.drawTexturedRectRotated(512 - 130 + 190, 512 - 120, 260, 240, 0)
+            render.drawTexturedRectRotated(512 + 130 + 190, 512 - 120, 240, 260, 90)
+            render.drawTexturedRectRotated(512 + 130 + 190, 512 + 120, 260, 240, 180)
+            render.drawTexturedRectRotated(512 - 130 + 190, 512 + 120, 240, 260, 270)
+            
+        render.selectRenderTarget("binocular2")
+            render.clear(Color(0,0,0,0), true)
+            render.drawRectFast(511, 504, 2, 16)
+            render.drawRectFast(504, 511, 16, 2)
+            
+            for i=1, 5 do
+                render.drawRectFast(512 - i * 94 + 47, 496, 2, 16) --Left Short
+                render.drawRectFast(512 - i * 94, 480, 2, 32) --Left Long
+                
+                render.drawRectFast(512 + i * 94 - 47, 496, 2, 16) --Right Short
+                render.drawRectFast(512 + i * 94, 480, 2, 32) --Right Long
+                
+                if i < 5 then
+                    render.drawRectFast(504, 512 - i * 47, 16, 2) --Top Short
+                end
+                if i < 3 then
+                    render.drawRectFast(511, 512 - i * 94 - 7, 2, 16) --Top Cross Vertical
+                end
+            end
+            
+        render.selectRenderTarget() --End
+        
+        if view == "GunnerView" then --Gunner View
+            render.setRenderTargetTexture("gunner")
+            for i=-5, 5 do
+                local temp = i * (16 + (zoomMultiplier-1) * 5)
+                render.setColor( Color(0, 0, 0, (i == 10 and 200 or 100) ) )
+                hud:drawTexturedRect(-64 - temp * 0.5, -484 - temp * 0.5, 2048 + temp, 2048 + temp)
+            end
+            
+            render.setColor( Color(0, 0, 0) )
+            
+            render.setRenderTargetTexture("gunner2")
+            local scale = math.max(zoomMultiplier * 0.5, 1)
+            hud:drawTexturedRect(960 - 960 * scale, 540 - 960 * scale, 1920 * scale, 1920 * scale)
+        elseif view == "BinocularView" then --Binocular View
+            render.setRenderTargetTexture("binocular")
+            for i=-3, 7 do
+                local temp = i * 12
+                render.setColor( Color(0, 0, 0, (i == 7 and 200 or 100) ) )
+                hud:drawTexturedRect(-64 - temp * 0.5, -484 - temp * 0.5, 2048 + temp, 2048 + temp)
+            end
+            render.setColor( Color(0, 0, 0) )
+            render.setRenderTargetTexture("binocular2")
+            hud:drawTexturedRect(448, 28, 1024, 1024)
+        else --Normal & Commander View
+            render.setRenderTargetTexture("canvas")
+            hud:drawTexturedRect(448, 28, 1024, 1024)
+        end
+        
+        
+        if isValid(gun) then --Gun Point
+            point = trace.line( gun:getPos(), gun:getPos() + gun:getForward() * 999999,
+                function(ent)
+                    local distance = gun:getPos():getDistance( ent:getPos() )
+                    if distance <= 600 then return end
+                end, nil, nil, false)
+            gunPoint = point.HitPos:toScreen()
+            render.setColor( Color(255,255,255) )
+            render.drawCircle(gunPoint.x, gunPoint.y, 10 * hud.multiplier)
+        end
+    end)
+end

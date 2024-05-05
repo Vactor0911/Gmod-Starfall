@@ -1,0 +1,422 @@
+--@name WarThunder SPAA Radar
+--@author Vactor0911
+--@shared
+--@include Class/hud_class.txt
+
+--[ Settings ]--
+OFFSET = {0, 0}
+SPHERICAL_RADAR_RPM = 60
+SWEEP_ANGLE = 15
+
+
+--[ Codes ]--
+require("Class/hud_class.txt")
+
+change = {}
+function Changed(name, value)
+    if change[name] ~= value then
+        change[name] = value
+        return true
+    else
+        return false
+    end
+end
+
+function GetRadarData(model)
+    local aryTemp = string.split(model, "_")
+    if aryTemp[1] ~= "models/radar/radar" then
+        return
+    end
+    
+    if model == "models/radar/radar_sml.mdl" then
+        return (1 / 0), 20
+    elseif model == "models/radar/radar_mid.mdl" then
+        return (1 / 0), 50
+    elseif model == "models/radar/radar_big.mdl" then
+        return (1 / 0), 120
+    elseif model == "models/radar/radar_sp_sml.mdl" then
+        return 200, 360
+    elseif model == "models/radar/radar_sp_mid.mdl" then
+        return 400, 360
+    elseif model == "models/radar/radar_sp_big.mdl" then
+        return 800, 360
+    end
+end
+
+function FixAngle(angle)
+    if angle > 0 then
+        return 360 - angle
+    else
+        return -angle
+    end
+end
+
+function AngleToText(angle)
+    if angle == 0 then
+        return "N"
+    elseif angle == 90 then
+        return "E"
+    elseif angle == 180 then
+        return "S"
+    elseif angle == 270 then
+        return "W"
+    end
+    
+    return angle
+end
+
+function IsInRadar(id)
+    if aryId[ dictTargetId[id] ] == id then
+        return true
+    else
+        return false
+    end
+end
+
+if SERVER then
+    wire.adjustInputs( {"SphericalRadar", "DirectionalRadar", "Active", "SphericalRadarAngle", "CamAng"},
+        {"wirelink", "wirelink", "n", "n", "a"} )
+    wire.adjustOutputs( {"Locked"}, {"n"} )
+    
+    --Initialize
+    SphericalRadar = wire.ports.SphericalRadar
+    DirectionalRadar = wire.ports.DirectionalRadar
+    Active = wire.ports.Active
+    SphericalRadarAngle = wire.ports.SphericalRadarAngle
+    CamAng = wire.ports.CamAng
+    
+    if not isValid(SphericalRadar) then
+        return
+    end
+    sphericalRadarAngle = 0
+    
+    --Send Data
+    hook.add("ClientInitialized", "", function(player)
+        local wirelink = chip():getWirelink()
+        local aryTemp = {}
+        aryTemp[1] = ( wirelink:isWired("SphericalRadar") and SphericalRadar.Entity or entity(0) )
+        aryTemp[2] = ( wirelink:isWired("DirectionalRadar") and DirectionalRadar.Entity or entity(0) )
+        aryTemp[3] = (wirelink:isWired("Active") and Active or 0)
+        aryTemp[4] = (wirelink:isWired("SphericalRadarAngle") and SphericalRadarAngle or 0)
+        aryTemp[5] = (wirelink:isWired("CamAng") and CamAng.yaw or nil)
+        
+        net.start("Initialize")
+        net.writeTable(aryTemp)
+        net.send(player)
+    end)
+    
+    hook.add("input", "", function(inputName, value)
+        if not chip():getWirelink():isWired(inputName) then
+            return
+        end
+        
+        if inputName == "SphericalRadar" then
+            net.start("SphericalRadar")
+            net.writeEntity(value.Entity)
+            net.send()
+        elseif inputName == "DirectionalRadar" then
+            net.start("DirectionalRadar")
+            net.writeEntity(value.Entity)
+            net.send()
+        elseif inputName == "Active" then
+            net.start("Active")
+            net.writeFloat(value)
+            net.send()
+        elseif inputName == "SphericalRadarAngle" then
+            net.start("SphericalRadarAngle")
+            net.writeFloat(value)
+            net.send()
+        elseif inputName == "CamAng" then
+            net.start("CamAng")
+            net.writeFloat(value.yaw)
+            net.send()
+        end
+    end)
+    
+    --Update Radar Data
+    interval = math.floor(SphericalRadar["Think Delay"] * 100) * 0.01
+    timer.create("Interval", interval, 0, function()
+        --Send Active Data
+        if not chip():getWirelink():isWired("Active") then
+            if Changed("Scanning", SphericalRadar["Scanning"]) then
+                net.start("Active")
+                net.writeFloat(SphericalRadar["Scanning"])
+                net.send()
+            end
+        end
+        
+        --Send Detected Targets
+        net.start("Targets")
+        net.writeTable( {SphericalRadar["IDs"], SphericalRadar["Owner"], SphericalRadar["Position"]} )
+        net.send()
+    end)
+    
+    timer.create("sphericalRadarAngle", 0.1, 0, function()
+        --Send Spherical Radar Angle
+        if not chip():getWirelink():isWired("SphericalRadarAngle") then
+            sphericalRadarAngle = sphericalRadarAngle + 36
+            if sphericalRadarAngle >= 360 then
+                sphericalRadarAngle = sphericalRadarAngle - 360
+            end
+            
+            net.start("SphericalRadarAngle")
+            net.writeFloat(sphericalRadarAngle)
+            net.send()
+        end
+    end)
+end
+
+
+if CLIENT then
+    --Initailize    
+    sphericalRadar = entity(0)
+    directionalRadar = entity(0)
+    active = 0
+    sphericalRadarAngle = 0
+    camAng = nil
+    
+    SPHERICAL_RADAR_DETECTION_RANGE = 0
+    DIRECTIONAL_RADAR_SCANNING_ANGLE = 0
+    
+    aryId = {}
+    aryOwner = {}
+    aryPosition = {}
+    aryTarget = {}
+    dictTargetId = {}
+    
+    --Receive Initial Data
+    net.receive("Initialize", function()
+        aryData = net.readTable()
+        sphericalRadar = aryData[1]
+        directionalRadar = aryData[2]
+        active = aryData[3]
+        sphericalRadarAngle = aryData[4]
+        camAng = aryData[5]
+        
+        SPHERICAL_RADAR_DETECTION_RANGE = GetRadarData( sphericalRadar:getModel() )
+        _, DIRECTIONAL_RADAR_SCANNING_ANGLE = GetRadarData( directionalRadar:getModel() )
+    end)
+    
+    --Receive Spherical Radar Entity
+    net.receive("SphericalRadar", function()
+        sphericalRadar = net.readEntity()
+        SPHERICAL_RADAR_DETECTION_RANGE = GetRadarData( sphericalRadar:getModel() )
+    end)
+    
+    --Receive Directional Radar Entity
+    net.receive("DirectionalRadar", function()
+        directionalRadar = net.readEntity()
+        _, DIRECTIONAL_RADAR_SCANNING_ANGLE = GetRadarData( directionalRadar:getModel() )
+    end)
+    
+    --Receive Active Data
+    net.receive("Active", function()
+        active = net.readFloat()
+        if active == 0 then
+            table.empty(aryTarget)
+        end
+    end)
+    
+    --Receive SphericalRadarAngle
+    net.receive("SphericalRadarAngle", function()
+        sphericalRadarAngle = net.readFloat()
+    end)
+    
+    --Receive Cam Yaw Angle
+    net.receive("CamAng", function()
+        camAng = net.readFloat()
+    end)
+    
+    --Receive Detected Targets
+    net.receive("Targets", function()
+        local aryTemp = net.readTable()
+        aryId = aryTemp[1]
+        aryOwner = aryTemp[2]
+        aryPosition = aryTemp[3]
+        
+        for i=1, table.count(aryId) do
+            local id = aryId[i]
+            dictTargetId[id] = i
+            if not istable(aryTarget[id]) then
+                aryTarget[id] = {}
+                aryTarget[id].alpha = 255
+                aryTarget[id].radarPosition = Vector()
+                aryTarget[id].radarDistance = 0
+                aryTarget[id].radarAngle = 0
+                aryTarget[id].id = id
+            end
+            aryTarget[id].owner = aryOwner[i]
+            aryTarget[id].position = aryPosition[i]
+        end
+    end)
+    
+    
+    --Spherical Radar Sweeping Angle Smoother
+    hook.add("think", "", function()
+        if active == 0 then
+            return
+        end
+        
+        sphericalRadarAngle = sphericalRadarAngle + SPHERICAL_RADAR_RPM * 6 * timer.frametime()
+        if sphericalRadarAngle >= 360 then
+            sphericalRadarAngle = sphericalRadarAngle - 360
+        end
+    end)
+    
+    
+    --Draw Hud
+    hud = Hud:new(OFFSET[1], OFFSET[2])
+    font = render.createFont("Arial", 22, 350, false, false, true)
+    render.createRenderTarget("radar")
+    render.createRenderTarget("cone_base")
+    render.createRenderTarget("spherical_radar_sweep")
+    render.createRenderTarget("directional_radar")
+    render.createRenderTarget("bearing")
+    
+    
+    hook.add("drawHud", "", function()
+        --RenderTargets
+        render.selectRenderTarget("radar") --Searching Radar
+            render.clear(Color(0, 0, 0, 0), true)
+            
+            render.setColor( Color(0, 30, 0, 200) )
+            render.drawFilledCircle(512, 512, 150)
+            
+            render.setColor( Color(0, 255, 0) )
+            --Lines 
+            for i=0, 5 do
+                local radian = math.rad(i * 30)
+                local x = math.cos(radian) * 150
+                local y = math.sin(radian) * 150
+                render.drawLine(512 + x, 512 + y, 512 - x, 512 - y)
+            end
+            
+            --Circles
+            render.drawCircle(512, 512, 150)
+            
+            if camAng ~= nil then
+                render.setRenderTargetTexture()
+                local radian = math.rad(-camAng - 90)
+                render.drawTexturedRectRotatedFast(512 + math.cos(radian) * 75, 512 + math.sin(radian) * 75, 150, 3, camAng - 90) --Cam Angle
+            end
+            
+            if active == 0 then --Radar Deactive
+                render.drawCircle(512, 512, 135)
+            else --Radar Active
+                render.drawCircle(512, 512, 112)
+                render.drawCircle(512, 512, 73)
+                render.drawCircle(512, 512, 35)
+                
+                --Texts
+                render.setFont(font)
+                render.drawSimpleText(495, 350, "SRC", TEXT_ALIGN.RIGHT, TEXT_ALIGN.CENTER)
+                render.drawSimpleText(512, 352, http.urlDecode("0%C2%B0"), TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+                render.drawText(664, 490, http.urlDecode("90%C2%B0%0A" .. tostring(SPHERICAL_RADAR_DETECTION_RANGE) .. "%20m%2A"), TEXT_ALIGN.LEFT)
+                render.drawSimpleText(512, 672, http.urlDecode("180%C2%B0"), TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+                render.drawText(360, 490, http.urlDecode("270%C2%B0%0A360%C2%B0%20x180%C2%B0"), TEXT_ALIGN.RIGHT)
+            
+                --Draw Targets
+                for _, target in pairs(aryTarget) do
+                    local position = ( target.position - sphericalRadar:getPos() ) * 0.009525
+                    local distance = sphericalRadar:getPos():getDistance(target.position)
+                    local angle = math.atan2(position.y, position.x) * 180 / 3.141592
+                    local fixedAngle = FixAngle(angle)
+                    
+                    if fixedAngle > sphericalRadarAngle - SWEEP_ANGLE * 0.5 and fixedAngle < sphericalRadarAngle + SWEEP_ANGLE * 0.5 and IsInRadar(target.id) then
+                        target.alpha = 255
+                        target.radarPosition = position
+                        target.radarDistance = distance
+                        target.radarAngle = angle
+                    end
+                    
+                    target.alpha = math.clamp(target.alpha - 1, 0, 255) --Fading
+                    if target.alpha <= 0 then --Remove When Faded
+                        dictTargetId[target.id] = nil
+                        aryTarget[target.id] = nil
+                    end
+                    
+                    render.setRenderTargetTexture()
+                    render.setColor( Color(0, 255, 0, target.alpha) )
+                    render.drawTexturedRectRotatedFast(512 - target.radarPosition.y, 512 - target.radarPosition.x, math.max(target.radarDistance * 0.0017, 7), 3, target.radarAngle)
+                end
+            end
+            
+        render.selectRenderTarget("cone_base") --Base Shape for Cones
+            render.clear(Color(0, 0, 0, 0), true)
+            render.enableScissorRect(0, 0, 1024, 512)
+            
+            render.setColor( Color(0, 255, 0, 100) )
+            render.drawFilledCircle(512, 512, 155)
+            
+        render.selectRenderTarget("spherical_radar_sweep") --Spherical Radar Sweep
+            render.clear(Color(0, 255, 0, 0), true)
+            
+            render.enableScissorRect(0, 0, 512, 1024)
+            render.setRenderTargetTexture("cone_base")
+            render.setColor( Color(0, 255, 0, 100) )
+            render.drawTexturedRectRotatedFast(512, 512, 1024, 1024, SWEEP_ANGLE * 0.5 - 90)
+            render.disableScissorRect()
+            
+        render.selectRenderTarget("directional_radar") --Directional Radar Scanning Angle
+            if isValid(directionalRadar) then
+                render.clear(Color(0, 255, 0, 0), true)
+                
+                render.enableScissorRect(0, 0, 512, 1024)
+                render.setRenderTargetTexture("cone_base")
+                render.setColor( Color(0, 255, 0, 50) )
+                render.drawTexturedRectRotatedFast(512, 512, 1024, 1024, DIRECTIONAL_RADAR_SCANNING_ANGLE - 90)
+                render.disableScissorRect()
+            end
+                
+        render.selectRenderTarget("bearing") --Bearing Info            
+            if camAng ~= nil then
+                render.clear(Color(0, 0, 0, 0), true)
+                
+                render.setColor( Color(0, 255, 0) )
+                render.setRenderTargetTexture()
+                render.drawTexturedRectRotatedFast(510, 522, 2, 12, -27)
+                render.drawTexturedRectRotatedFast(514, 522, 2, 12, 27)
+                render.enableScissorRect(282, 0, 742, 512)
+                
+                local offsetX = camAng % 5 * 12
+                local fixedAngle = FixAngle(camAng) + 5
+                local fixedAngleCenter = math.floor(fixedAngle / 5) * 5
+                for i = -4, 5 do
+                    render.drawRectFast(512 + i * 60 + offsetX - 30 - 1, 503, 2, 9)
+                    render.drawRectFast(512 + i * 60 + offsetX - 1, 495, 2, 17)
+                    
+                    local fixedAngleCenterText = fixedAngleCenter + i * 5
+                    if fixedAngleCenterText < 0 then
+                        fixedAngleCenterText = fixedAngleCenterText + 360
+                    elseif fixedAngleCenterText >= 360 then
+                        fixedAngleCenterText = fixedAngleCenterText - 360
+                    end
+                    fixedAngleCenterText = AngleToText(fixedAngleCenterText)
+                    render.setFont(font)
+                    render.drawSimpleText(512 + i * 60 + offsetX, 495, tostring(fixedAngleCenterText), TEXT_ALIGN.CENTER, TEXT_ALIGN.BOTTOM)
+                end
+            end
+            
+        render.selectRenderTarget()
+        render.setColor( Color(0, 255, 0) )
+        
+        --Renders
+        render.setRenderTargetTexture("radar") --Radar Base
+        hud:drawTexturedRectFast(-235, -320, 1024, 1024)
+        
+        if active == 1 then --Spherical Radar Sweeping Angle
+            render.setRenderTargetTexture("spherical_radar_sweep")
+            hud:drawTexturedRectRotatedFast(277, 192, 1024, 1024, -SWEEP_ANGLE * 0.25 - sphericalRadarAngle)
+        end
+        
+        if isValid(directionalRadar) then --Directional Radar Scanning Angle
+            render.setRenderTargetTexture("directional_radar")
+            hud:drawTexturedRectRotatedFast(-235 + 512, -320 + 512, 1024, 1024, -DIRECTIONAL_RADAR_SCANNING_ANGLE * 0.5 + directionalRadar:getAngles().yaw)
+        end
+        
+        if camAng ~= nil then
+            render.setRenderTargetTexture("bearing") --Bearing Info
+            hud:drawTexturedRectFast(960 - 512, 540 - 512 - 495, 1024, 1024)
+        end
+    end)
+end

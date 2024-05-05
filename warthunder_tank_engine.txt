@@ -1,0 +1,156 @@
+--@name WarThunder Tank Engine
+--@author Vactor0911
+--@shared
+
+
+--[ Settings ]--
+IDLE = 15
+THROTTLE = 100
+BRAKE_FORCE = 500
+PIVOT_TURN = true
+
+--[ Code ]--
+if SERVER then
+    wire.adjustInputs( {"W", "S", "A", "D", "Base", "Chair", "Engine", "GearBox", "LeftTransfer", "RightTransfer"},
+    {"n", "n", "n", "n", "e", "e", "e", "e", "e", "e"} )
+    wire.adjustOutputs( {"Kph", "Latch"}, {"n", "n"} )
+    
+    --Initialize
+    CLUTCH_MULTIPLIER = 1.5 / BRAKE_FORCE
+    
+    --Get WireLinks    
+    hook.add("input", "", function(inputName, value)
+        if inputName == "W" then
+            W = value
+        elseif inputName == "S" then
+            S = value
+        elseif inputName == "A" then
+            A = value
+        elseif inputName == "D" then
+            D = value
+        elseif inputName == "Base" then
+            base = value
+        elseif inputName == "Chair" then
+            chair = value
+        elseif inputName == "Engine" then
+            engine = value
+        elseif inputName == "GearBox" then
+            gearBox = value
+        elseif inputName == "LeftTransfer" then
+            leftTransfer = value
+        elseif inputName == "RightTransfer" then
+            rightTransfer = value
+        end
+    end)
+    
+    --Engine Control
+    hook.add("PlayerEnteredVehicle", "", function(_, vehicle)
+        if not isValid(base) or not isValid(engine) or not isValid(gearBox) then
+            return
+        end
+        
+        if vehicle == chair then
+            active = 1
+            engine:acfSetActive(true)
+        end
+    end)
+    hook.add("PlayerLeaveVehicle", "", function(_, vehicle)
+        if not isValid(base) or not isValid(engine) or not isValid(gearBox) then
+            return
+        end
+        
+        if vehicle == chair then
+            active = 0
+            engine:acfSetActive(false)
+        end
+    end)
+    
+    timer.create("Interval", 0.1, 0, function()
+        if not isValid(base) or not isValid(engine) or not isValid(gearBox) then
+            return
+        end
+        
+        if active == 0 then
+            engine:acfSetThrottle(0)
+            leftTransfer:acfBrake(BRAKE_FORCE)
+            rightTransfer:acfBrake(BRAKE_FORCE)
+            return
+        end
+        
+        --Kph
+        kph = math.round(base:getVelocity():getLength() * 0.06858)
+        wire.ports.Kph = kph
+                
+        --Throttle
+        engine:acfSetThrottle( math.max(IDLE, math.clamp(W + S + A + D, 0, 1) * THROTTLE) )
+        engine:acfDisableRevLimiter()
+        
+        --Brakes
+        if W + S + A + D <= 0 then
+            leftBrake = BRAKE_FORCE
+            rightBrake = BRAKE_FORCE
+        elseif W + S <= 0 then
+            if PIVOT_TURN then
+                leftBrake = A * D * BRAKE_FORCE
+                rightBrake = A * D * BRAKE_FORCE
+            else
+                leftBrake = A * BRAKE_FORCE
+                rightBrake = D * BRAKE_FORCE
+            end
+        else
+            if kph <= 10 then
+                brakeMultiplier = 1
+            else
+                brakeMultiplier = math.clamp(1 - kph / 80, 0.1, 1)
+            end
+            leftBrake = A * BRAKE_FORCE * brakeMultiplier
+            rightBrake = D * BRAKE_FORCE * brakeMultiplier
+        end
+        leftTransfer:acfBrake(leftBrake)
+        rightTransfer:acfBrake(rightBrake)
+        
+        --Gears
+        if not engine:acfInPowerband() then
+            if engine:acfRPM() >= engine:acfPowerbandMax() and gearBox:acfGear() < gearBox:acfNumGears() then
+                gearBox:acfShift( gearBox:acfGear() + 1 )
+            elseif engine:acfRPM() <= engine:acfPowerbandMin() and gearBox:acfGear() > 1 then
+                gearBox:acfShift( gearBox:acfGear() - 1 )
+            end
+        end
+        
+        pivot = 0
+        if W + S > 0 then
+            leftGear = 1 + S
+            rightGear = 1 + S
+        else
+            if PIVOT_TURN then
+                leftGear = 1 + A
+                rightGear = 1 + D
+                pivot = 1
+            else
+                leftGear = 1
+                rightGear = 1
+            end
+        end
+        leftTransfer:acfShift(leftGear)
+        rightTransfer:acfShift(rightGear)
+        
+        --Clutchs
+        if W + S + A + D <= 0 then
+            leftClutch = 1
+            rightClutch = 1
+        else
+            leftClutch = (pivot == 1 and 0.75 or leftBrake * CLUTCH_MULTIPLIER)
+            rightClutch = (pivot == 1 and 0.75 or rightBrake * CLUTCH_MULTIPLIER)
+        end
+        leftTransfer:acfClutch(leftClutch)
+        rightTransfer:acfClutch(rightClutch)
+        
+        --Latches
+        if W + S + A + D <= 0 and kph <= 2 then
+            wire.ports.Latch = 1
+        else
+            wire.ports.Latch = 0
+        end
+    end)
+end

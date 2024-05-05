@@ -1,0 +1,305 @@
+--@name Gta5 Target LockOn
+--@author Vactor0911
+--@shared
+--@include Class/hud_class.txt
+
+--[[ Settings ]]--
+SCAN_ANGLE = 20
+DISTANCE = 0
+
+
+--[[ Codes ]]--
+require("Class/hud_class.txt")
+SCAN_RANGE_OFFSET = SCAN_ANGLE * 11
+
+aryEntity = {}
+function GetPlayers()
+    --Get Players
+    if isValid(Base) then
+        aryEntity = find.allPlayers()
+    else
+        aryEntity = find.allPlayers(function(entity)
+            if entity ~= owner() then
+                return entity
+            end
+        end)
+    end 
+end
+
+function GetDiffAng(position, direction, targetPos)
+    
+
+    return math.deg( math.acos( math.clamp( (targetPos - position):getNormalized():dot(direction), -1, 1) ) )
+end
+
+locked = 0
+target = nil
+function SetLock(lock)
+    if lock == 0 then
+        target = nil
+        timer.remove("Lock")
+        timer.remove("Target")
+    end
+    
+    locked = lock
+    wire.ports.Locked = locked
+    net.start("Lock")
+    net.writeTable( {locked, target, ( isValid(target) and target:getMassCenter() or Vector() )} )
+    net.send()
+    
+    --Print Target Data
+    if lock == 0 then
+        wire.ports.TargetEntity = entity(0)
+        wire.ports.TargetPosition = Vector()
+        wire.ports.TargetVelocity = Vector()
+        wire.ports.TargetDistance = 0
+        return
+    end
+    
+    timer.create("Target", 0.1, 0, function()
+        wire.ports.TargetEntity = target
+        wire.ports.TargetPosition = target:getMassCenterW()
+        wire.ports.TargetVelocity = target:getVelocity()
+        wire.ports.TargetDistance = position:getDistance( target:getMassCenter() )
+    end)
+end
+
+function IsInRange(entity)
+    if isValid(entity) then
+        return GetDiffAng( position, direction, entity:getMassCenterW() ) <= SCAN_ANGLE
+    end
+end
+
+function IsInDistance(entity)
+    if isValid(entity) then
+        local distance = position:getDistance( entity:getPos() )
+        if DISTANCE == 0 then
+            return true
+        else
+            return distance <= DISTANCE
+        end
+    end
+end
+
+function IsHidden(entity)
+    if isValid(entity) then
+        local point = trace.line(position, (entity:getPos() - position):getNormalized() * 999999, {owner(), wire.ports.Base}, nil, nil, false)
+        return point.Entity ~= entity
+    end
+end
+
+
+if SERVER then
+    wire.adjustInputs( {"LockOn", "Base"}, {"n", "e"} )
+    wire.adjustOutputs( {"Locked", "TargetEntity", "TargetPosition", "TargetVelocity", "TargetDistance"},
+        {"n", "e", "v", "v", "n"} )
+    
+    --Initialize
+    LockOn = wire.ports.LockOn
+    Base = wire.ports.Base
+    
+    GetPlayers()
+    
+    hook.add("ClientInitialized", "", function(player)
+        net.start("Initialize")
+        net.writeTable( {LockOn, Base} )
+        net.send(player)
+    end)
+    
+    --Update Inputs
+    hook.add("input", "", function(inputName, value)
+        if inputName == "LockOn" then
+            net.start("LockOn")
+            net.writeFloat(value)
+            net.send()
+            
+            if value == 0 then
+                SetLock(0)
+            end
+        elseif inputName == "Base" then
+            net.start("Base")
+            net.writeTable( {value} )
+            net.send()
+        end
+    end)
+    
+    --Update Players
+    hook.add("PlayerConnect", "", function()
+        GetPlayers()
+    end)
+    
+    hook.add("PlayerDisconnect", "", function()
+        GetPlayers()
+    end)
+    
+    
+    timer.create("Interval", 0.1, 0, function()
+        if wire.ports.LockOn ~= 0 then
+            --Find Targets
+            
+            if isValid(Base) then --Base
+                position = Base:getPos()
+                direction = Base:getForward()
+            else --Owner
+                position = owner():getMassCenterW()
+                direction = owner():getEyeTrace().Normal
+                base = owner()
+            end
+            
+            --Check Selected Target Is In Rage
+            if wire.ports.LockOn == 1 and isValid(target) then
+                if IsInRange(target) and IsInDistance(target) and not IsHidden(target) then
+                    return
+                end
+            end
+            
+            --Get Closest Target From Middle Of Rage
+            minAngle = SCAN_ANGLE
+            if isValid(target) or locked == 1 then
+                SetLock(0)
+            end
+            
+            for k, v in pairs(aryEntity) do
+                if not isValid(v) or not IsInDistance(v) or IsHidden(v) then
+                    continue
+                end
+                
+                diffAngle = GetDiffAng( position, direction, v:getMassCenterW() )
+                
+                if diffAngle > SCAN_ANGLE then
+                    continue
+                end
+                
+                if diffAngle < minAngle then
+                    minAngle = diffAngle
+                    target = v
+                end
+            end
+            
+            --Locking Target
+            if isValid(target) then
+                net.start("Target")
+                net.writeTable( {target, ( isValid(target) and target:getMassCenter() or Vector() )} )
+                net.send()
+                
+                timer.create("Lock", 2, 1, function()
+                    if isValid(target) then
+                        SetLock(1)
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+
+if CLIENT then    
+    --Get Inputs
+    net.receive("Initialize", function()
+        local array = net.readTable()
+        lockOn = array[1]
+        base = array[2]
+    end)
+    
+    net.receive("LockOn", function()
+        lockOn = net.readFloat()
+    end)
+    
+    net.receive("Base", function()
+        base = net.readTable()[1]
+    end)
+    
+    net.receive("Target", function()
+        local array = net.readTable()
+        target = array[1]
+        massCenter = array[2]
+    end)
+    
+    net.receive("Lock", function()
+        local array = net.readTable()
+        locked = array[1]
+        target = array[2]
+        massCenter = array[3]
+    end)
+    
+    --Draw Hud
+    hud = Hud:new(0, 0)
+    render.createRenderTarget("LockOnSquare")
+    render.createRenderTarget("Target")
+    
+    hook.add("drawHud", "", function()
+        if lockOn == 0 then
+            return
+        end
+        
+        if isValid(base) then
+            local point = trace.line(base:getPos(), base:getPos() + base:getForward() * 999999, base, nil, nil, false)
+            hitPos = point.HitPos
+            pos = hitPos:toScreen()
+            scale = 1024 * hitPos:getDistance(position) / hitPos:getDistance( player():getPos() )
+        else
+            position = owner():getShootPos()
+            direction = owner():getEyeTrace().Normal
+            hitPos = owner():getEyeTrace().HitPos
+            pos = {x = 960, y = 540}
+            scale = 1024
+        end
+        
+        
+        render.selectRenderTarget("LockOnSquare")
+            render.clear(Color(0, 0, 0, 0), true)
+            --Shades
+            render.setColor( Color(0, 0, 0) )
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 - SCAN_RANGE_OFFSET, 21, 4) --Top Left
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 - SCAN_RANGE_OFFSET, 4, 21)
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET-20, 512 - SCAN_RANGE_OFFSET, 21, 4) --Top Right
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET-3, 512 - SCAN_RANGE_OFFSET, 4, 21)
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 + SCAN_RANGE_OFFSET - 3, 21, 4) --Bottom Left
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 + SCAN_RANGE_OFFSET - 20, 4, 21)
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET - 20, 512 + SCAN_RANGE_OFFSET - 3, 21, 4) --Bottom Right
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET - 3, 512 + SCAN_RANGE_OFFSET - 20, 4, 21)
+            
+            --Edges
+            render.setColor( Color(255, 255, 255) )
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 - SCAN_RANGE_OFFSET, 20, 3) --Top Left
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 - SCAN_RANGE_OFFSET, 3, 20)
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET-20, 512 - SCAN_RANGE_OFFSET, 20, 3) --Top Right
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET-3, 512 - SCAN_RANGE_OFFSET, 3, 20)
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 + SCAN_RANGE_OFFSET - 3, 20, 3) --Bottom Left
+            render.drawRectFast(512 - SCAN_RANGE_OFFSET, 512 + SCAN_RANGE_OFFSET - 20, 3, 20)
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET - 20, 512 + SCAN_RANGE_OFFSET - 3, 20, 3) --Bottom Right
+            render.drawRectFast(512 + SCAN_RANGE_OFFSET - 3, 512 + SCAN_RANGE_OFFSET - 20, 3, 20)
+            
+        render.selectRenderTarget("Target")
+            render.clear(Color(0, 0, 0, 0), true)
+            --Shades
+            render.setColor( Color(0, 0, 0) )
+            render.drawTexturedRectRotatedFast(512 - 16, 512 - 16, 48, 4, 45)
+            render.drawTexturedRectRotatedFast(512 + 16, 512 - 16, 48, 4, -45)
+            render.drawTexturedRectRotatedFast(512 - 16, 512 + 16, 48, 4, -45)
+            render.drawTexturedRectRotatedFast(512 + 16, 512 + 16, 48, 4, 45)
+            
+            --Diamod
+            if locked == 1 then
+                render.setColor( Color(255, 0, 0) )
+            else
+                render.setColor( Color(255, 191, 0) )
+            end
+            render.drawTexturedRectRotatedFast(512 - 16, 512 - 16, 48, 3, 45)
+            render.drawTexturedRectRotatedFast(512 + 16, 512 - 16, 48, 3, -45)
+            render.drawTexturedRectRotatedFast(512 - 16, 512 + 16, 48, 3, -45)
+            render.drawTexturedRectRotatedFast(512 + 16, 512 + 16, 48, 3, 45)
+            
+        render.selectRenderTarget()
+        
+        render.setColor( Color(255, 255, 255) )
+        render.setRenderTargetTexture("LockOnSquare")
+        hud:drawTexturedRectFast(pos.x - scale * 0.5, pos.y - scale * 0.5, scale, scale)
+        
+        if isValid(target) then
+            render.setRenderTargetTexture("Target")
+            local targetPosScreen = target:localToWorld(massCenter):toScreen()
+            hud:drawTexturedRectFast(targetPosScreen.x - 512, targetPosScreen.y - 512, 1024, 1024)
+        end
+    end)
+end
